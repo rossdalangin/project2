@@ -1,0 +1,28 @@
+[
+    {
+        "timestamp": "2026-10-28T20:12:28+00:00",
+        "event": "rejected_bot_honeypot",
+        "data": {
+            "ip": "127.0.0.1"
+        }
+    },
+    {
+        "timestamp": "2026-10-28T20:12:28+00:00",
+        "event": "csrf_failure",
+        "data": {
+            "ip": "127.0.0.1"
+        }
+    },
+    {
+        "timestamp": "2026-10-28T20:12:28+00:00",
+        "event": "lead_submitted",
+        "data": {
+            "name": "Alice Smith",
+            "email": "alice@example.com",
+            "phone": "555-0199",
+            "company": "TechCorp &amp; Co",
+            "message": "Interested in services!",
+            "id": 2
+        }
+    }
+]
