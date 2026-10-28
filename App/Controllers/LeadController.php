@@ -52,6 +52,31 @@ class LeadController
     }
 
     /**
+     * Rate limiting check (e.g. max 10 requests per minute per IP).
+     */
+    private function isRateLimited(string $ip): bool
+    {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        $now = time();
+        $window = 60; // 60 seconds
+        $maxRequests = 10;
+
+        if (!isset($_SESSION['rate_limit'])) {
+            $_SESSION['rate_limit'] = ['time' => $now, 'count' => 0];
+        }
+
+        if ($now - $_SESSION['rate_limit']['time'] > $window) {
+            $_SESSION['rate_limit'] = ['time' => $now, 'count' => 1];
+            return false;
+        }
+
+        $_SESSION['rate_limit']['count']++;
+        return $_SESSION['rate_limit']['count'] > $maxRequests;
+    }
+
+    /**
      * Render lead submission form HTML.
      */
     public function index(): void
@@ -108,27 +133,27 @@ HTML;
 
             <div class="form-group">
                 <label for="name">Full Name *</label>
-                <input type="text" id="name" name="name" required>
+                <input type="text" id="name" name="name" maxlength="100" required>
             </div>
 
             <div class="form-group">
                 <label for="email">Email Address *</label>
-                <input type="email" id="email" name="email" required>
+                <input type="email" id="email" name="email" maxlength="150" required>
             </div>
 
             <div class="form-group">
                 <label for="phone">Phone Number</label>
-                <input type="text" id="phone" name="phone">
+                <input type="text" id="phone" name="phone" maxlength="30">
             </div>
 
             <div class="form-group">
                 <label for="company">Company</label>
-                <input type="text" id="company" name="company">
+                <input type="text" id="company" name="company" maxlength="100">
             </div>
 
             <div class="form-group">
                 <label for="message">Message</label>
-                <textarea id="message" name="message"></textarea>
+                <textarea id="message" name="message" maxlength="2000"></textarea>
             </div>
 
             <button type="submit">Submit Lead</button>
@@ -144,11 +169,20 @@ HTML;
      */
     public function handleSubmission(): void
     {
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+
+        // 0. Rate limiting
+        if ($this->isRateLimited($ip)) {
+            $this->logActivity('rate_limit_exceeded', ['ip' => $ip]);
+            $this->respond(429, ['status' => 'error', 'message' => 'Too many requests. Please try again later.']);
+            return;
+        }
+
         // 1. Spam Defense: Honeypot check
         $honeypot = $_POST['website_hp'] ?? null;
         if (!empty($honeypot)) {
             // Silently reject bot submissions
-            $this->logActivity('rejected_bot_honeypot', ['ip' => $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1']);
+            $this->logActivity('rejected_bot_honeypot', ['ip' => $ip]);
             $this->respond(200, ['status' => 'success', 'message' => 'Lead submitted successfully!']);
             return;
         }
@@ -156,7 +190,7 @@ HTML;
         // 2. CSRF Verification
         $csrfToken = $_POST['csrf_token'] ?? null;
         if (!$this->validateCsrfToken($csrfToken)) {
-            $this->logActivity('csrf_failure', ['ip' => $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1']);
+            $this->logActivity('csrf_failure', ['ip' => $ip]);
             $this->respond(403, ['status' => 'error', 'message' => 'CSRF verification failed. Invalid token.']);
             return;
         }
@@ -185,11 +219,11 @@ HTML;
             $message = htmlspecialchars($_POST['message'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         }
 
-        $name = is_string($name) ? trim($name) : '';
-        $email = filter_var(trim((string)$emailRaw), FILTER_VALIDATE_EMAIL);
-        $phone = is_string($phone) ? trim($phone) : '';
-        $company = is_string($company) ? trim($company) : '';
-        $message = is_string($message) ? trim($message) : '';
+        $name = is_string($name) ? mb_substr(trim($name), 0, 100) : '';
+        $email = filter_var(mb_substr(trim((string)$emailRaw), 0, 150), FILTER_VALIDATE_EMAIL);
+        $phone = is_string($phone) ? mb_substr(trim($phone), 0, 30) : '';
+        $company = is_string($company) ? mb_substr(trim($company), 0, 100) : '';
+        $message = is_string($message) ? mb_substr(trim($message), 0, 2000) : '';
 
         if (empty($name)) {
             $this->respond(400, ['status' => 'error', 'message' => 'Name is required.']);
@@ -235,7 +269,11 @@ HTML;
     private function dispatchEmailNotification(array $leadData): bool
     {
         $to = "admin@example.com";
-        $subject = "New Lead Submission: " . $leadData['name'];
+        // Sanitize headers against CRLF injection
+        $safeName = str_replace(["\r", "\n"], '', $leadData['name']);
+        $safeEmail = str_replace(["\r", "\n"], '', $leadData['email']);
+
+        $subject = "New Lead Submission: " . $safeName;
         $body = "New lead details:\n\n"
               . "Name: {$leadData['name']}\n"
               . "Email: {$leadData['email']}\n"
@@ -243,7 +281,7 @@ HTML;
               . "Company: {$leadData['company']}\n"
               . "Message: {$leadData['message']}\n";
         $headers = "From: no-reply@example.com\r\n"
-                 . "Reply-To: {$leadData['email']}\r\n"
+                 . "Reply-To: {$safeEmail}\r\n"
                  . "X-Mailer: PHP/" . phpversion();
 
         return @mail($to, $subject, $body, $headers);
